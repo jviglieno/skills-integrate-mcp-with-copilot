@@ -7,8 +7,10 @@ for extracurricular activities at Mergington High School.
 
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
+import json
 import os
+import asyncio
 from pathlib import Path
 
 app = FastAPI(title="Mergington High School API",
@@ -19,8 +21,10 @@ current_dir = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=os.path.join(Path(__file__).parent,
           "static")), name="static")
 
-# In-memory activity database
-activities = {
+DATA_FILE = current_dir / "activities.json"
+update_listeners: list[asyncio.Queue[str]] = []
+
+default_activities = {
     "Chess Club": {
         "description": "Learn strategies and compete in chess tournaments",
         "schedule": "Fridays, 3:30 PM - 5:00 PM",
@@ -78,9 +82,52 @@ activities = {
 }
 
 
+def load_activities():
+    if DATA_FILE.exists():
+        with DATA_FILE.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    return default_activities.copy()
+
+
+def save_activities():
+    with DATA_FILE.open("w", encoding="utf-8") as f:
+        json.dump(activities, f, indent=2)
+
+
+def notify_activity_update():
+    event = json.dumps({"type": "activities_updated"})
+    for listener in list(update_listeners):
+        try:
+            listener.put_nowait(event)
+        except asyncio.QueueFull:
+            pass
+
+
+activities = load_activities()
+if not DATA_FILE.exists():
+    save_activities()
+
+
 @app.get("/")
 def root():
     return RedirectResponse(url="/static/index.html")
+
+
+async def activity_event_generator(queue: asyncio.Queue):
+    try:
+        while True:
+            event_data = await queue.get()
+            yield f"data: {event_data}\n\n"
+    finally:
+        if queue in update_listeners:
+            update_listeners.remove(queue)
+
+
+@app.get("/activities/stream")
+def stream_activities():
+    queue: asyncio.Queue[str] = asyncio.Queue(maxsize=10)
+    update_listeners.append(queue)
+    return StreamingResponse(activity_event_generator(queue), media_type="text/event-stream")
 
 
 @app.get("/activities")
@@ -107,6 +154,8 @@ def signup_for_activity(activity_name: str, email: str):
 
     # Add student
     activity["participants"].append(email)
+    save_activities()
+    notify_activity_update()
     return {"message": f"Signed up {email} for {activity_name}"}
 
 
@@ -129,4 +178,6 @@ def unregister_from_activity(activity_name: str, email: str):
 
     # Remove student
     activity["participants"].remove(email)
+    save_activities()
+    notify_activity_update()
     return {"message": f"Unregistered {email} from {activity_name}"}
