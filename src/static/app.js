@@ -155,6 +155,20 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  // Listen for activity updates from the server
+  function startActivityStream() {
+    const eventSource = new EventSource("/activities/stream");
+
+    eventSource.onmessage = () => {
+      fetchActivities();
+    };
+
+    eventSource.onerror = (error) => {
+      console.warn("Activity stream disconnected, retrying…", error);
+    };
+  }
+
   // Initialize app
   fetchActivities();
+  startActivityStream();
 });
